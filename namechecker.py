@@ -11,8 +11,6 @@ with open("env.txt", "r") as file:
         # Assign the value to the corresponding variable
         if name == "token":
             token = value
-        elif name == "password":
-            password = value
         elif name == "tocheck":
             tocheck = value
         elif name == "available":
@@ -67,8 +65,7 @@ for username in usernames:
         "content-type": "application/json",
     }
     payload = {
-        "username": username,
-        "password": password
+        "username": username
     }
     response = requests.patch(url, headers=headers, json=payload)
     data = response.json()
