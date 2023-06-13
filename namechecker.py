@@ -60,7 +60,8 @@ for username in usernames:
         "content-type": "application/json",
     }
     payload = {
-        "username": username
+        "username": username,
+        "password": variables["password"]
     }
     response = requests.patch(url, headers=headers, json=payload)
     data = response.json()
