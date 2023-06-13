@@ -27,19 +27,20 @@ def handle_rate_limited(data, username):
     print(f"Rate limited, waiting {data.get('retry_after') + 0.1} seconds")
     time.sleep(data.get('retry_after') + 0.1)  # Wait for rate limit
 
-    response = requests.patch(
-        url, headers=headers, json=payload)  # try again
+    response = requests.patch(url, headers=headers, json=payload)  # try again
     data = response.json()
 
-    if data.get('code') == 50035:
+    if "code" in data and data.get('code') == 50035:
         handle_taken(data, username)
-    elif data.get('code') == 10020 or 'captcha_key' in data:
+        return False
+    elif "code" in data and (data.get('code') == 10020 or 'captcha_key' in data):
         handle_available(data, username)
+        return False
+    elif "retry_after" in data:
+        return handle_rate_limited(data, username)
     else:
-        print(data)
-        print("Unknown error code or still rate-limited, stopped the script")
-        return True
-
+        return handle_unknown(data)
+        
 def handle_available(data, username):
     print(data)
     print(f'{username} is available and is added to the text file')
@@ -71,16 +72,16 @@ for username in usernames:
     }
     response = requests.patch(url, headers=headers, json=payload)
     data = response.json()
-
-    if data.get('code') == 50035:
+    
+    if "code" in data and data.get('code') == 50035:
         handle_taken(data, username)
+    elif "code" in data and (data.get('code') == 10020 or 'captcha_key' in data):
+        handle_available(data, username)
     elif "retry_after" in data:
         if handle_rate_limited(data, username):
-            break
-    elif data.get('code') == 10020 or 'captcha_key' in data:
-        handle_available(data, username)
+            break  # only break if unknown error
     else:
         if handle_unknown(data):
-            break
+            break  # only break if unknown error
 
-    time.sleep(2.5)  # Sleep 2.5 seconds to adhere to avoid rate limit
+    time.sleep(2.5)  # Sleep 2.5 seconds to avoid rate limit
