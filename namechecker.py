@@ -48,6 +48,7 @@ def process_usernames(token, password, run_event, progress_bar):
             handle_unknown(data)
 
         time.sleep(2.5)  # Sleep 2.5 seconds to avoid rate limit
+        print('\n')
         progress_bar.update(1)  # Increment progress bar
 
 
