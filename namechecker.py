@@ -10,15 +10,22 @@ with open("env.txt", "r") as file:
     env_dict = dict(env_data)
     tocheck = env_dict.get("tocheck")
     available = env_dict.get("available")
+    loop = env_dict.get("loop")
+    notifications = env_dict.get("notifications") == "True"
+    bot_token = env_dict.get("bot_token")
+    chat_id = env_dict.get("chat_id")
+
 
 # Read the tokens and passwords from the file
 with open("tokens.txt", "r") as file:
     tokens, passwords = zip(*(line.strip().split(":") for line in file))
 
-# Read the usernames from the file
-with open(tocheck, "r") as file:
-    usernames = [word for line in file for word in line.strip().split()]
-
+usernames = []
+for i in range(int(loop)):
+    with open(tocheck, "r") as file:
+        for line in file:
+            words = line.strip().split()
+            usernames.extend(words)
 
 # Process username list for each thread iteratively
 def process_usernames(token, password, run_event, progress_bar):
@@ -49,7 +56,10 @@ def process_usernames(token, password, run_event, progress_bar):
 
         time.sleep(2.5)  # Sleep 2.5 seconds to avoid rate limit
         print('\n')
-        progress_bar.update(1)  # Increment progress bar
+        progress_bar.update(1)  # Increment progress bar`
+        if len(usernames) == 5:
+            message = f"Done with checking: {tocheck}"
+            send_telegram_message(bot_token, chat_id, message)
 
 
 def handle_taken(data, username):
@@ -80,11 +90,27 @@ def handle_available(data, username):
     print(f'{username} is available and is added to the text file')
     with open(available, 'a') as file:
         file.write(str(username) + '\n')
+    if notifications == True:
+        message = f"Username found: {username}"
+        send_telegram_message(bot_token, chat_id, message)
+        message = username
+        send_telegram_message(bot_token, chat_id, message)
 
 
 def handle_unknown(data):
     print(data)
     os._exit(1)
+
+# Replace with your own Telegram bot token and chat ID
+def send_telegram_message(token, chat_id, message):
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    params = {
+        "chat_id": chat_id,
+        "text": message
+    }
+    response = requests.post(url, params=params)
+    if response.status_code != 200:
+        print("Failed to send Telegram message.")
 
 
 # Create an event object to signal threads
