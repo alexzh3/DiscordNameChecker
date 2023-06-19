@@ -55,9 +55,8 @@ def process_usernames(token, password, run_event, progress_bar):
             handle_unknown(data)
 
         time.sleep(2.5)  # Sleep 2.5 seconds to avoid rate limit
-        print('\n')
         progress_bar.update(1)  # Increment progress bar`
-        if len(usernames) == 5:
+        if len(usernames) == 3:
             message = f"Done with checking: {tocheck}"
             send_telegram_message(bot_token, chat_id, message)
 
