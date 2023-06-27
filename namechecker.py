@@ -57,10 +57,18 @@ def read_usernames():
             words = line.strip().split()
             usernames.extend(words)
 
-# Read tokens
+# Read tokens:password
 def read_tokens():
     with open("tokens.txt", "r") as file:
-        tokens, passwords = zip(*(line.strip().split(":") for line in file))
+        for line in file:
+            line = line.strip()
+            if ":" in line:
+                token, password = line.split(":")
+            else:
+                token = line
+                password = ""
+            tokens.append(token)
+            passwords.append(password)
     return tokens, passwords
 
 # Process an username request
@@ -96,18 +104,25 @@ def process_usernames(token, password, run_event, progress_bar):
                 "password": password
             }
             try:
-                response = requests.patch(url, headers=headers, json=payload, proxies=proxies, timeout=10)
-                data = response.json()
+                if password == "":
+                    url = "https://discord.com/api/v9/users/@me/pomelo-attempt"
+                    payload.pop("password")
+                    response = requests.post(url, headers=headers, json=payload, proxies=proxies, timeout=10)
+                    data = response.json()
+                else:
+                    response = requests.patch(url, headers=headers, json=payload, proxies=proxies, timeout=10)
+                    data = response.json()
             except requests.exceptions.RequestException as e:
                 logging.error(f"Request exception occurred in {threading.current_thread().name}: {str(e)}")
                 logging.error(f"Proxy exception occurred for proxy: {proxy}")
+                usernames.append(username) # Append last username back to list that was not checked because of exception
                 continue
 
-            if data.get('code', 0) == 50035 or data.get('username', 'empty') == username:
+            if data.get('code', 0) == 50035 or data.get('username', 'empty') == username or data.get('taken', 'empty') == "True":
                 handle_taken(data, username)
-            elif (data.get('code', 0) == 10020 or 'captcha_key' in data):
+            elif data.get('code', 0) == 10020 or 'captcha_key' in data or data.get('taken', 'empty') == "False":
                 handle_available(data, username)
-            elif(data.get('code', 0) == 40002):
+            elif data.get('code', 0) == 40002:
                 handle_verify(data, token)
                 return
             elif "retry_after" in data:
@@ -188,6 +203,7 @@ usernames = []
 read_usernames()
 
 # Read the tokens and passwords from the file
+tokens, passwords = []
 tokens, passwords = read_tokens()
 
 # Config Proxies
@@ -231,4 +247,3 @@ with tqdm(total=len(usernames), desc="Checking usernames") as progress_bar:
         for thread in threads:
             thread.join()  # Wait for threads to finish
         logging.info("Threads successfully closed")
-            
