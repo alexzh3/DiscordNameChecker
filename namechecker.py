@@ -22,7 +22,7 @@ with open("env.txt", "r") as file:
     proxy_token = env_dict.get("proxy_token")
 
 
-# Configure loggingF
+# Configure logging
 current_datetime = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 log_file = f"log_{current_datetime}.txt"
 
@@ -96,23 +96,35 @@ def process_usernames(token, password, run_event, progress_bar):
             url = "https://discord.com/api/v9/users/@me"
             headers = {
                 "accept": "*/*",
+                "accept-encoding": "gzip, deflate, br",
+                "accept-language": "en-US,en;q=0.9",
                 "authorization": token,
                 "content-type": "application/json",
+                "origin": "https://discord.com",
+                "referer": "https://discord.com/channels/@me",
+                "sec-ch-ua": '"Not.A/Brand";v="8", "Chromium";v="114", "Google Chrome";v="114"',
+                "sec-ch-ua-mobile": "?0",
+                "sec-ch-ua-platform": "Windows",
+                "sec-fetch-dest": "empty",
+                "sec-fetch-mode": "cors",
+                "sec-fetch-site": "same-origin",
+                "user-agent": "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36",
+                "x-debug-options": "bugReporterEnabled",
+                "x-super-properties": "eyJvcyI6IldpbmRvd3MiLCJicm93c2VyIjoiQ2hyb21lIiwiZGV2aWNlIjoiIiwic3lzdGVtX2xvY2FsZSI6Im5sLU5MIiwiYnJvd3Nlcl91c2VyX2FnZW50IjoiTW96aWxsYS81LjAgKFdpbmRvd3MgTlQgMTAuMDsgV2luNjQ7IHg2NCkgQXBwbGVXZWJLaXQvNTM3LjM2IChLSFRNTCwgbGlrZSBHZWNrbykgQ2hyb21lLzExNC4wLjAuMCBTYWZhcmkvNTM3LjM2IiwiYnJvd3Nlcl92ZXJzaW9uIjoiMTE0LjAuMC4wIiwib3NfdmVyc2lvbiI6IjEwIiwicmVmZXJyZXIiOiIiLCJyZWZlcnJpbmdfZG9tYWluIjoiIiwicmVmZXJyZXJfY3VycmVudCI6IiIsInJlZmVycmluZ19kb21haW5fY3VycmVudCI6IiIsInJlbGVhc2VfY2hhbm5lbCI6InN0YWJsZSIsImNsaWVudF9idWlsZF9udW1iZXIiOjIwODMxOSwiY2xpZW50X2V2ZW50X3NvdXJjZSI6bnVsbH0",
             }
             payload = {"username": username, "password": password}
             try:
                 if not password:
-                    url = "https://discord.com/api/v9/users/@me/pomelo-attempt"
+                    url = "https://discord.com/api/v9/users/@me/pomelo"
                     payload.pop("password")
                     response = requests.post(
                         url, headers=headers, json=payload, proxies=proxies, timeout=10
                     )
-                    data = response.json()
                 elif password:
                     response = requests.patch(
                         url, headers=headers, json=payload, proxies=proxies, timeout=10
                     )
-                    data = response.json()
+                data = response.json()
             except requests.exceptions.RequestException as e:
                 logging.error(
                     f"Request exception occurred in {threading.current_thread().name}: {str(e)}"
@@ -123,17 +135,9 @@ def process_usernames(token, password, run_event, progress_bar):
                 )  # Append current username back to list that was not checked because of exception
                 continue
 
-            if (
-                data.get("code") == 50035
-                or data.get("username") == username
-                or data.get("taken") == True
-            ):
+            if data.get("code") == 50035 or data.get("username") == username:
                 handle_taken(data, username)
-            elif (
-                data.get("code") == 10020
-                or "captcha_key" in data
-                or data.get("taken") == False
-            ):
+            elif data.get("code") == 10020 or "captcha_key" in data:
                 handle_available(data, username)
             elif data.get("code") == 40002:
                 handle_verify(data, token)
@@ -142,18 +146,31 @@ def process_usernames(token, password, run_event, progress_bar):
                 )  # Append current username back to list that was not checked because of error
                 return  # Stop the current thread
             elif "retry_after" in data:
-                time.sleep(2.5)  # Sleep 2.5 seconds to avoid rate limit
-                handle_rate_limited(data, username, url, headers, payload, proxies)
-            else:
-                logging.error(
-                    f"Unknown error or 401, token: {token}, password:{password}, {threading.current_thread().name}"
+                logging.debug(f"{threading.current_thread().name} - {data}")
+                logging.info(
+                    f"{threading.current_thread().name} - Rate limited, waiting {data.get('retry_after') + 1} seconds"
                 )
+                usernames.append(
+                    username
+                )  # Append current username back to list that was not checked because of rate limit
+                time.sleep(data.get("retry_after") + 1)  # Wait for rate limit
+                process_usernames(token, password, run_event, progress_bar)  # Retry
+            elif data.get("code") == 40001:
+                logging.error(f"{threading.current_thread().name} - {data}")
+                logging.error(
+                    f"Token not verified with phone or mail yet, token: {token}, password:{password}, {threading.current_thread().name}"
+                )
+                usernames.append(
+                    username
+                )  # Append current username back to list that was not checked because of error
+                return  # Stop current thread
+            else:
                 handle_unknown(data)
             time.sleep(2.5)  # Sleep 2.5 seconds to avoid rate limit
             progress_bar.update(1)  # Increment progress bar
     except Exception as e:
         logging.exception(
-            f"Exception occurred in {threading.current_thread().name}: {str(e)}"
+            f"Exception occurred in {threading.current_thread().name}: {str(e)} for token: {token}, password:{password}"
         )
         os._exit(1)
 
@@ -161,34 +178,6 @@ def process_usernames(token, password, run_event, progress_bar):
 def handle_taken(data, username):
     logging.debug(f" {threading.current_thread().name} - {data}")
     logging.info(f" {threading.current_thread().name} - {username} is already taken")
-
-
-def handle_rate_limited(data, username, url, headers, payload, proxies):
-    logging.debug(f"{threading.current_thread().name} - {data}")
-    logging.info(
-        f"{threading.current_thread().name} - Rate limited, waiting {data.get('retry_after') + 0.1} seconds"
-    )
-    time.sleep(data.get("retry_after") + 0.1)  # Wait for rate limit
-
-    try:
-        response = requests.patch(
-            url, headers=headers, json=payload, proxies=proxies, timeout=10
-        )
-        data = response.json()
-    except requests.exceptions.RequestException as e:
-        logging.error(
-            f"Request exception occurred in {threading.current_thread().name}: {str(e)}"
-        )
-        logging.error(f"Proxy exception occurred for proxy: {proxy}")
-
-    if data.get("code") == 50035:
-        handle_taken(data, username)
-    elif data.get("code") == 10020 or "captcha_key" in data:
-        handle_available(data, username)
-    elif "retry_after" in data:
-        handle_rate_limited(data, username, url, headers, payload)
-    else:
-        handle_unknown(data)
 
 
 def handle_available(data, username):
@@ -214,6 +203,9 @@ def handle_verify(data, token):
 
 def handle_unknown(data):
     logging.error(f"{threading.current_thread().name} - {data}")
+    logging.error(
+        f"Unknown error, token: {token}, password:{password}, {threading.current_thread().name}"
+    )
     os._exit(1)
 
 
