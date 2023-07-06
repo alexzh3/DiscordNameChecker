@@ -88,7 +88,7 @@ def process_usernames(token, run_event, progress_bar, url):
     try:
         while run_event.is_set() and usernames:
             if url == url_attempt:
-                time.sleep(20)  # Sleep 20 seconds
+                time.sleep(30)  # Sleep 30 seconds
             if len(usernames) == 0:
                 if loop:
                     if not hasLock:
@@ -134,17 +134,18 @@ def process_usernames(token, run_event, progress_bar, url):
                 response = requests.post(
                     url, headers=headers, json=payload, proxies=proxies, timeout=10
                 )
+                if response.status_code == 403:
+                    handle_verify(data, token)
+                    continue
                 data = response.json()
             except requests.exceptions.RequestException as e:
                 logging.error(
-                    f"Request exception occurred in {threading.current_thread().name}: {str(e)}"
+                        f"Request exception occurred in {threading.current_thread().name}: {str(e)}, proxy: {proxy}, token: {token}, status code: {response.status_code}"
                 )
-                logging.error(f"Proxy exception occurred for proxy: {proxy}")
                 usernames.append(
                     username
                 )  # Append current username back to list that was not checked because of exception
                 progress_bar.update(-1)  # Update progress bar
-                time.sleep(random.randint(5, 10))
                 continue
 
             if (
@@ -287,7 +288,7 @@ threads = []
 with tqdm(total=usernames_length, desc="Checking usernames") as progress_bar:
     for i, token in enumerate(tokens):
         time.sleep(0.24)  # Don't start all at the same time
-        thread_num = i  # Thread number starts from 1
+        thread_num = i+1  # Thread number starts from 1
         thread_name = f"Thread-{thread_num}"
         thread = threading.Thread(
             target=process_usernames,
