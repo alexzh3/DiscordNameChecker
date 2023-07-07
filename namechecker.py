@@ -1,12 +1,6 @@
-import requests
-import threading
-import time
-import os
+import requests, threading, time, os, queue, logging, datetime
 from tqdm import tqdm
-import logging
-import datetime
 from itertools import cycle
-import random
 
 
 def read_env_file(file_path):
@@ -68,8 +62,8 @@ def create_proxy_pool(proxy_enabled, proxy_token):
 def read_usernames():
     with open(tocheck, "r") as file:
         for line in file:
-            username = line.strip().split()
-            usernames.extend(username)
+            username = line.strip()
+            usernames.put(username)
 
 
 # Read tokens
@@ -84,26 +78,22 @@ def read_tokens():
 
 # Process an username request
 def process_usernames(token, run_event, progress_bar, url):
-    global hasLock
     try:
         while run_event.is_set() and usernames:
             if url == url_attempt:
-                time.sleep(30)  # Sleep 30 seconds
-            if len(usernames) == 0:
+                time.sleep(31)  # Sleep 30 seconds
+            if usernames.qsize() == 0:
                 if loop:
-                    if not hasLock:
-                        hasLock =  True
-                        with lock:
-                            read_usernames()    # Re-populate the usernames list from the tocheck file
-                            reset_progress_bar(progress_bar, len(usernames))
-                        hasLock = False
+                    with lock:
+                        read_usernames()  # Re-populate the usernames list from the tocheck file
+                        reset_progress_bar(progress_bar, usernames.qsize())
                 else:
-                    time.sleep(30)
+                    time.sleep(31)
                     message = f"Done with checking: {tocheck}"
                     send_telegram_message(bot_token, chat_id, message)
                     os._exit(1)
             try:
-                username = usernames.pop(0)
+                username = usernames.get()
             except Exception as e:
                 logging.error(f"Exception occurred while popping username: {str(e)}")
                 continue
@@ -134,19 +124,22 @@ def process_usernames(token, run_event, progress_bar, url):
                 response = requests.post(
                     url, headers=headers, json=payload, proxies=proxies, timeout=10
                 )
-                if response.status_code == 403:
-                    handle_verify(data, token)
-                    continue
                 data = response.json()
+
             except requests.exceptions.RequestException as e:
                 logging.error(
-                        f"Request exception occurred in {threading.current_thread().name}: {str(e)}, proxy: {proxy}, token: {token}, status code: {response.status_code}"
+                    f"Request exception occurred in {threading.current_thread().name}: {str(e)}, proxy: {proxy}, token: {token}"
                 )
-                usernames.append(
-                    username
-                )  # Append current username back to list that was not checked because of exception
-                progress_bar.update(-1)  # Update progress bar
-                continue
+                try:
+                    if response.status_code == 403:
+                        handle_verify(data, token)
+                    continue
+                except:
+                    usernames.put(
+                        username
+                    )  # Append current username back to list that was not checked because of exception
+                    progress_bar.update(-1)  # Update progress bar
+                    continue
 
             if (
                 data.get("code") == 50035
@@ -162,7 +155,7 @@ def process_usernames(token, run_event, progress_bar, url):
                 handle_available(data, username)
             elif data.get("code") == 40002:
                 handle_verify(data, token)
-                usernames.append(
+                usernames.put(
                     username
                 )  # Append current username back to list that was not checked because of error
                 progress_bar.update(-1)  # Update progress bar
@@ -181,7 +174,7 @@ def process_usernames(token, run_event, progress_bar, url):
                 logging.error(
                     f"Token not verified with phone or mail yet, token: {token}, {threading.current_thread().name}"
                 )
-                usernames.append(
+                usernames.put(
                     username
                 )  # Append current username back to list that was not checked because of error
                 progress_bar.update(-1)  # Update progress bar
@@ -237,6 +230,7 @@ def send_telegram_message(token, chat_id, message):
     if response.status_code != 200:
         logging.error("Failed to send Telegram message.")
 
+
 def reset_progress_bar(progress_bar, total):
     progress_bar.total = total
     progress_bar.reset()
@@ -256,7 +250,7 @@ proxy_token = env_dict.get("proxy_token")
 configure_logging(log_type)
 
 # Read usernames
-usernames = []
+usernames = queue.Queue()
 read_usernames()
 
 # Read the tokens and passwords from the file
@@ -271,24 +265,20 @@ run_event = threading.Event()
 run_event.set()
 
 # Number of threads
-num_threads = min(len(tokens), len(usernames))
+num_threads = min(len(tokens), usernames.qsize())
 
-# Create lock and global bool
+# Create lock
 lock = threading.Lock()
-hasLock = False
 
 # URL
 url_attempt = "https://discord.com/api/v9/users/@me/pomelo-attempt"
 
-# Username list length
-usernames_length = len(usernames)
-
 # Create and start the threads
 threads = []
-with tqdm(total=usernames_length, desc="Checking usernames") as progress_bar:
+with tqdm(total=usernames.qsize(), desc="Checking usernames") as progress_bar:
     for i, token in enumerate(tokens):
         time.sleep(0.24)  # Don't start all at the same time
-        thread_num = i+1  # Thread number starts from 1
+        thread_num = i + 1  # Thread number starts from 1
         thread_name = f"Thread-{thread_num}"
         thread = threading.Thread(
             target=process_usernames,
