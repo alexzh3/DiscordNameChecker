@@ -1,5 +1,4 @@
 import requests, threading, time, os, queue, logging, datetime, concurrent.futures
-from tqdm import tqdm
 from itertools import cycle
 
 
@@ -128,7 +127,7 @@ def process_usernames(token, run_event, url):
                     with lock:
                         read_usernames()  # Re-populate the usernames list from the tocheck file
                 else:
-                    time.sleep(120)
+                    time.sleep(225)
                     message = f"Done with checking: {tocheck}"
                     send_telegram_message(bot_token, chat_id, message)
                     os._exit(1)
@@ -140,7 +139,6 @@ def process_usernames(token, run_event, url):
             if proxy_enabled:
                 proxy = next(proxy_pool)
                 proxies = {"http": f"http://{proxy}", "https": f"http://{proxy}"}
-            time.sleep(120)  # Sleep 60 seconds
             data = request_username(  # Request data
                 token, username, proxies, proxy, url
             )
@@ -156,6 +154,7 @@ def process_usernames(token, run_event, url):
                 )
 
             if data is None:
+                time.sleep(225)  # Sleep 225 seconds
                 continue
 
             if (
@@ -188,7 +187,7 @@ def process_usernames(token, run_event, url):
                 return  # Stop current thread
             else:
                 handle_unknown(data)
-            
+            time.sleep(225)  # Sleep 225 seconds
 
     except Exception as e:
         logging.exception(
@@ -199,13 +198,15 @@ def process_usernames(token, run_event, url):
 
 def handle_taken(data, username):
     logging.debug(f" {threading.current_thread().name} - {data}")
-    logging.info(f" {threading.current_thread().name} - {username} is already taken - Progress: {total_usernames - usernames.qsize()}/{total_usernames} ({round(100 - (usernames.qsize() / total_usernames * 100), 2)}%)"
+    logging.info(
+        f" {threading.current_thread().name} - {username} is already taken - Progress: {total_usernames - usernames.qsize()}/{total_usernames} ({round(100 - (usernames.qsize() / total_usernames * 100), 2)}%) - Time: {time.strftime('%H:%M:%S', time.gmtime(time.time() - start_time))}"
     )
+
 
 def handle_available(data, username):
     logging.debug(f"{threading.current_thread().name} - {data}")
     logging.info(
-        f"{threading.current_thread().name} - {username} is available and is added to the text file - Progress: {usernames.qsize()} ({round(100 - (usernames.qsize() / total_usernames * 100), 2)}%)"
+        f"{threading.current_thread().name} - {username} is available and is added to the text file - Progress: {usernames.qsize()} ({round(100 - (usernames.qsize() / total_usernames * 100), 2)}%) - Time: {time.strftime('%H:%M:%S', time.gmtime(time.time() - start_time))}"
     )
     with open(available, "a") as file:
         file.write(str(username) + "\n")
@@ -275,6 +276,9 @@ total_usernames = usernames.qsize()
 # Number of threads
 num_threads = min(len(tokens), usernames.qsize())
 
+# Timer for start time
+start_time = time.time()
+
 # Create lock
 lock = threading.Lock()
 
@@ -287,9 +291,7 @@ futures = []
 for token in tokens:
     # Submit tasks to the thread pool
     time.sleep(0.2)  # Don't start all at the same time
-    future = executor.submit(
-        process_usernames, token, run_event, url_attempt
-    )
+    future = executor.submit(process_usernames, token, run_event, url_attempt)
     futures.append(future)  # Append the Future object to the list
 
 try:
