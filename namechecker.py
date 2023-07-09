@@ -1,4 +1,4 @@
-import requests, threading, time, os, queue, logging, datetime
+import requests, threading, time, os, queue, logging, datetime, concurrent.futures
 from tqdm import tqdm
 from itertools import cycle
 
@@ -76,19 +76,59 @@ def read_tokens():
     return tokens
 
 
+def request_username(token, username, proxies, proxy, url):
+    headers = {
+        "accept": "*/*",
+        "accept-encoding": "gzip, deflate, br",
+        "accept-language": "en-US,en;q=0.9",
+        "authorization": token,
+        "content-type": "application/json",
+        "origin": "https://discord.com",
+        "referer": "https://discord.com/channels/@me",
+        "sec-ch-ua": '"Not.A/Brand";v="8", "Chromium";v="114", "Google Chrome";v="114"',
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": "Windows",
+        "sec-fetch-dest": "empty",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-site": "same-origin",
+        "user-agent": "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36",
+        "x-debug-options": "bugReporterEnabled",
+        "x-super-properties": "eyJvcyI6IldpbmRvd3MiLCJicm93c2VyIjoiQ2hyb21lIiwiZGV2aWNlIjoiIiwic3lzdGVtX2xvY2FsZSI6Im5sLU5MIiwiYnJvd3Nlcl91c2VyX2FnZW50IjoiTW96aWxsYS81LjAgKFdpbmRvd3MgTlQgMTAuMDsgV2luNjQ7IHg2NCkgQXBwbGVXZWJLaXQvNTM3LjM2IChLSFRNTCwgbGlrZSBHZWNrbykgQ2hyb21lLzExNC4wLjAuMCBTYWZhcmkvNTM3LjM2IiwiYnJvd3Nlcl92ZXJzaW9uIjoiMTE0LjAuMC4wIiwib3NfdmVyc2lvbiI6IjEwIiwicmVmZXJyZXIiOiIiLCJyZWZlcnJpbmdfZG9tYWluIjoiIiwicmVmZXJyZXJfY3VycmVudCI6IiIsInJlZmVycmluZ19kb21haW5fY3VycmVudCI6IiIsInJlbGVhc2VfY2hhbm5lbCI6InN0YWJsZSIsImNsaWVudF9idWlsZF9udW1iZXIiOjIwODMxOSwiY2xpZW50X2V2ZW50X3NvdXJjZSI6bnVsbH0",
+    }
+    payload = {"username": username}
+    try:
+        response = requests.post(
+            url, headers=headers, json=payload, proxies=proxies, timeout=10
+        )
+        data = response.json()
+        return data
+
+    except requests.exceptions.RequestException as e:
+        logging.error(
+            f"Request exception occurred in {threading.current_thread().name}: {str(e)}, proxy: {proxy}, token: {token}"
+        )
+        usernames.put(
+            username
+        )  # Append current username back to list that was not checked because of exception
+        data = None
+        try:
+            if response.status_code == 403:
+                handle_verify(data, token)
+            return data
+        except:
+            return data
+
+
 # Process an username request
-def process_usernames(token, run_event, progress_bar, url):
+def process_usernames(token, run_event, url):
     try:
         while run_event.is_set() and usernames:
-            if url == url_attempt:
-                time.sleep(31)  # Sleep 30 seconds
             if usernames.qsize() == 0:
                 if loop:
                     with lock:
                         read_usernames()  # Re-populate the usernames list from the tocheck file
-                        reset_progress_bar(progress_bar, usernames.qsize())
                 else:
-                    time.sleep(31)
+                    time.sleep(120)
                     message = f"Done with checking: {tocheck}"
                     send_telegram_message(bot_token, chat_id, message)
                     os._exit(1)
@@ -100,46 +140,23 @@ def process_usernames(token, run_event, progress_bar, url):
             if proxy_enabled:
                 proxy = next(proxy_pool)
                 proxies = {"http": f"http://{proxy}", "https": f"http://{proxy}"}
-            url = url
-            headers = {
-                "accept": "*/*",
-                "accept-encoding": "gzip, deflate, br",
-                "accept-language": "en-US,en;q=0.9",
-                "authorization": token,
-                "content-type": "application/json",
-                "origin": "https://discord.com",
-                "referer": "https://discord.com/channels/@me",
-                "sec-ch-ua": '"Not.A/Brand";v="8", "Chromium";v="114", "Google Chrome";v="114"',
-                "sec-ch-ua-mobile": "?0",
-                "sec-ch-ua-platform": "Windows",
-                "sec-fetch-dest": "empty",
-                "sec-fetch-mode": "cors",
-                "sec-fetch-site": "same-origin",
-                "user-agent": "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36",
-                "x-debug-options": "bugReporterEnabled",
-                "x-super-properties": "eyJvcyI6IldpbmRvd3MiLCJicm93c2VyIjoiQ2hyb21lIiwiZGV2aWNlIjoiIiwic3lzdGVtX2xvY2FsZSI6Im5sLU5MIiwiYnJvd3Nlcl91c2VyX2FnZW50IjoiTW96aWxsYS81LjAgKFdpbmRvd3MgTlQgMTAuMDsgV2luNjQ7IHg2NCkgQXBwbGVXZWJLaXQvNTM3LjM2IChLSFRNTCwgbGlrZSBHZWNrbykgQ2hyb21lLzExNC4wLjAuMCBTYWZhcmkvNTM3LjM2IiwiYnJvd3Nlcl92ZXJzaW9uIjoiMTE0LjAuMC4wIiwib3NfdmVyc2lvbiI6IjEwIiwicmVmZXJyZXIiOiIiLCJyZWZlcnJpbmdfZG9tYWluIjoiIiwicmVmZXJyZXJfY3VycmVudCI6IiIsInJlZmVycmluZ19kb21haW5fY3VycmVudCI6IiIsInJlbGVhc2VfY2hhbm5lbCI6InN0YWJsZSIsImNsaWVudF9idWlsZF9udW1iZXIiOjIwODMxOSwiY2xpZW50X2V2ZW50X3NvdXJjZSI6bnVsbH0",
-            }
-            payload = {"username": username}
-            try:
-                response = requests.post(
-                    url, headers=headers, json=payload, proxies=proxies, timeout=10
-                )
-                data = response.json()
+            time.sleep(120)  # Sleep 60 seconds
+            data = request_username(  # Request data
+                token, username, proxies, proxy, url
+            )
 
-            except requests.exceptions.RequestException as e:
-                logging.error(
-                    f"Request exception occurred in {threading.current_thread().name}: {str(e)}, proxy: {proxy}, token: {token}"
+            while data is not None and "retry_after" in data:
+                logging.debug(f"{threading.current_thread().name} - {data}")
+                logging.info(
+                    f"{threading.current_thread().name} - Rate limited, waiting {data.get('retry_after') + 1} seconds"
                 )
-                try:
-                    if response.status_code == 403:
-                        handle_verify(data, token)
-                    continue
-                except:
-                    usernames.put(
-                        username
-                    )  # Append current username back to list that was not checked because of exception
-                    progress_bar.update(-1)  # Update progress bar
-                    continue
+                time.sleep(data.get("retry_after"))  # Wait for rate limit
+                data = request_username(  # Request data
+                    token, username, proxies, proxy, url
+                )
+
+            if data is None:
+                continue
 
             if (
                 data.get("code") == 50035
@@ -158,17 +175,8 @@ def process_usernames(token, run_event, progress_bar, url):
                 usernames.put(
                     username
                 )  # Append current username back to list that was not checked because of error
-                progress_bar.update(-1)  # Update progress bar
                 return  # Stop the current thread
-            elif "retry_after" in data:
-                logging.debug(f"{threading.current_thread().name} - {data}")
-                logging.info(
-                    f"{threading.current_thread().name} - Rate limited, waiting {data.get('retry_after') + 1} seconds"
-                )
-                time.sleep(data.get("retry_after") + 1)  # Wait for rate limit
-                process_usernames(
-                    token, run_event, progress_bar, url_attempt
-                )  # Retry with attempt url
+
             elif data.get("code") == 40001:
                 logging.error(f"{threading.current_thread().name} - {data}")
                 logging.error(
@@ -177,11 +185,10 @@ def process_usernames(token, run_event, progress_bar, url):
                 usernames.put(
                     username
                 )  # Append current username back to list that was not checked because of error
-                progress_bar.update(-1)  # Update progress bar
                 return  # Stop current thread
             else:
                 handle_unknown(data)
-            progress_bar.update(1)  # Update progress bar
+            
 
     except Exception as e:
         logging.exception(
@@ -192,13 +199,13 @@ def process_usernames(token, run_event, progress_bar, url):
 
 def handle_taken(data, username):
     logging.debug(f" {threading.current_thread().name} - {data}")
-    logging.info(f" {threading.current_thread().name} - {username} is already taken")
-
+    logging.info(f" {threading.current_thread().name} - {username} is already taken - Progress: {total_usernames - usernames.qsize()}/{total_usernames} ({round(100 - (usernames.qsize() / total_usernames * 100), 2)}%)"
+    )
 
 def handle_available(data, username):
     logging.debug(f"{threading.current_thread().name} - {data}")
     logging.info(
-        f"{threading.current_thread().name} - {username} is available and is added to the text file"
+        f"{threading.current_thread().name} - {username} is available and is added to the text file - Progress: {usernames.qsize()} ({round(100 - (usernames.qsize() / total_usernames * 100), 2)}%)"
     )
     with open(available, "a") as file:
         file.write(str(username) + "\n")
@@ -231,11 +238,6 @@ def send_telegram_message(token, chat_id, message):
         logging.error("Failed to send Telegram message.")
 
 
-def reset_progress_bar(progress_bar, total):
-    progress_bar.total = total
-    progress_bar.reset()
-
-
 # Set config variables
 env_dict = read_env_file("env.txt")
 tocheck = env_dict.get("tocheck")
@@ -248,6 +250,9 @@ log_type = env_dict.get("log_type")
 proxy_enabled = env_dict.get("proxy_enabled") == "True"
 proxy_token = env_dict.get("proxy_token")
 configure_logging(log_type)
+
+# URL
+url_attempt = "https://discord.com/api/v9/users/@me/pomelo-attempt"
 
 # Read usernames
 usernames = queue.Queue()
@@ -264,37 +269,64 @@ proxy_pool = create_proxy_pool(proxy_enabled, proxy_token)
 run_event = threading.Event()
 run_event.set()
 
+# Total usernames size
+total_usernames = usernames.qsize()
+
 # Number of threads
 num_threads = min(len(tokens), usernames.qsize())
 
 # Create lock
 lock = threading.Lock()
 
-# URL
-url_attempt = "https://discord.com/api/v9/users/@me/pomelo-attempt"
+# Create a ThreadPoolExecutor with a maximum of 1000 threads
+executor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=1000, thread_name_prefix="Thread"
+)
+# List to store the Future objects
+futures = []
+for token in tokens:
+    # Submit tasks to the thread pool
+    time.sleep(0.2)  # Don't start all at the same time
+    future = executor.submit(
+        process_usernames, token, run_event, url_attempt
+    )
+    futures.append(future)  # Append the Future object to the list
 
-# Create and start the threads
-threads = []
-with tqdm(total=usernames.qsize(), desc="Checking usernames") as progress_bar:
-    for i, token in enumerate(tokens):
-        time.sleep(0.24)  # Don't start all at the same time
-        thread_num = i + 1  # Thread number starts from 1
-        thread_name = f"Thread-{thread_num}"
-        thread = threading.Thread(
-            target=process_usernames,
-            args=(token, run_event, progress_bar, url_attempt),
-            name=thread_name,
-        )
-        threads.append(thread)
-        thread.start()
-
+try:
     # Wait for keyboard interrupt
-    try:
-        while True:
-            time.sleep(0.01)
-    except KeyboardInterrupt:
-        logging.info("Attempting to close threads")
-        run_event.clear()  # Signal threads to stop
-        for thread in threads:
-            thread.join()  # Wait for threads to finish
-        logging.info("Threads successfully closed")
+    while True:
+        time.sleep(0.01)
+except KeyboardInterrupt:
+    logging.info("Keyboard interrupt received. Attempting to cancel tasks.")
+    # Cancel the remaining tasks
+    for future in futures:
+        future.cancel()
+    # Clean up and join the threads
+    logging.info("Attempting to close threads")
+    run_event.clear()  # Signal threads to stop
+    logging.info("Threads successfully closed")
+
+# # Create and start the threads
+# threads = []
+# for i, token in enumerate(tokens):
+#     time.sleep(0.1)  # Don't start all at the same time
+#     thread_num = i + 1  # Thread number starts from 1
+#     thread_name = f"Thread-{thread_num}"
+#     thread = threading.Thread(
+#         target=process_usernames,
+#         args=(token, run_event, url_attempt),
+#         name=thread_name,
+#     )
+#     threads.append(thread)
+#     thread.start()
+
+# # Wait for keyboard interrupt
+# try:
+#     while True:
+#         time.sleep(0.01)
+# except KeyboardInterrupt:
+#     logging.info("Attempting to close threads")
+#     run_event.clear()  # Signal threads to stop
+#     for thread in threads:
+#         thread.join()  # Wait for threads to finish
+#     logging.info("Threads successfully closed")
