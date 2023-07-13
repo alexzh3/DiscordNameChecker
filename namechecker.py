@@ -1,4 +1,4 @@
-import requests, threading, time, os, queue, logging, datetime, concurrent.futures
+import requests, threading, time, os, queue, logging, datetime, concurrent.futures, random, sys
 from itertools import cycle
 
 
@@ -113,6 +113,7 @@ def request_username(token, username, proxies, proxy, url):
         try:
             if response.status_code == 403:
                 handle_verify(data, token)
+                sys.exit()  # Stop current thread
             return data
         except:
             return data
@@ -127,7 +128,7 @@ def process_usernames(token, run_event, url):
                     with lock:
                         read_usernames()  # Re-populate the usernames list from the tocheck file
                 else:
-                    time.sleep(225)
+                    time.sleep(310)
                     message = f"Done with checking: {tocheck}"
                     send_telegram_message(bot_token, chat_id, message)
                     os._exit(1)
@@ -145,16 +146,27 @@ def process_usernames(token, run_event, url):
 
             while data is not None and "retry_after" in data:
                 logging.debug(f"{threading.current_thread().name} - {data}")
-                logging.info(
-                    f"{threading.current_thread().name} - Rate limited, waiting {data.get('retry_after') + 1} seconds"
-                )
-                time.sleep(data.get("retry_after"))  # Wait for rate limit
+                if data.get("retry_after") < 60:
+                    time_60 = data.get("retry_after") + random.randint(30, 60)
+                    logging.info(
+                        f"{threading.current_thread().name} - Rate limited, waiting {time_60} seconds"
+                    )
+                    time.sleep(time_60)  # Wait for rate limit
+                else:
+                    time_more = time.sleep(
+                        data.get("retry_after") + random.randint(5, 20)
+                    )
+                    logging.info(
+                        f"{threading.current_thread().name} - Rate limited, waiting {time_more} seconds"
+                    )
+                    time.sleep(time_more)
                 data = request_username(  # Request data
                     token, username, proxies, proxy, url
                 )
 
             if data is None:
-                time.sleep(225)  # Sleep 225 seconds
+                time.sleep(10)  # Sleep 10 seconds
+                usernames.put(username)
                 continue
 
             if (
@@ -169,12 +181,12 @@ def process_usernames(token, run_event, url):
                 or data.get("taken") == False
             ):
                 handle_available(data, username)
-            elif data.get("code") == 40002:
+            elif data.get("code") == 40002 or data.get("taken") == None:
                 handle_verify(data, token)
                 usernames.put(
                     username
                 )  # Append current username back to list that was not checked because of error
-                return  # Stop the current thread
+                sys.exit()  # Stop current thread
 
             elif data.get("code") == 40001:
                 logging.error(f"{threading.current_thread().name} - {data}")
@@ -184,10 +196,10 @@ def process_usernames(token, run_event, url):
                 usernames.put(
                     username
                 )  # Append current username back to list that was not checked because of error
-                return  # Stop current thread
+                sys.exit()  # Stop current thread
             else:
                 handle_unknown(data)
-            time.sleep(225)  # Sleep 225 seconds
+            time.sleep(10)  # Sleep 10 seconds
 
     except Exception as e:
         logging.exception(
@@ -282,53 +294,53 @@ start_time = time.time()
 # Create lock
 lock = threading.Lock()
 
-# Create a ThreadPoolExecutor with a maximum of 1000 threads
-executor = concurrent.futures.ThreadPoolExecutor(
-    max_workers=1000, thread_name_prefix="Thread"
-)
-# List to store the Future objects
-futures = []
-for token in tokens:
-    # Submit tasks to the thread pool
-    time.sleep(0.2)  # Don't start all at the same time
-    future = executor.submit(process_usernames, token, run_event, url_attempt)
-    futures.append(future)  # Append the Future object to the list
+# # Create a ThreadPoolExecutor with a maximum of 1000 threads
+# executor = concurrent.futures.ThreadPoolExecutor(
+#     max_workers=num_threads, thread_name_prefix="Thread"
+# )
+# # List to store the Future objects
+# futures = []
+# for token in tokens:
+#     # Submit tasks to the thread pool
+#     time.sleep(0.15)  # Don't start all at the same time
+#     future = executor.submit(process_usernames, token, run_event, url_attempt)
+#     futures.append(future)  # Append the Future object to the list
 
-try:
-    # Wait for keyboard interrupt
-    while True:
-        time.sleep(0.01)
-except KeyboardInterrupt:
-    logging.info("Keyboard interrupt received. Attempting to cancel tasks.")
-    # Cancel the remaining tasks
-    for future in futures:
-        future.cancel()
-    # Clean up and join the threads
-    logging.info("Attempting to close threads")
-    run_event.clear()  # Signal threads to stop
-    logging.info("Threads successfully closed")
-
-# # Create and start the threads
-# threads = []
-# for i, token in enumerate(tokens):
-#     time.sleep(0.1)  # Don't start all at the same time
-#     thread_num = i + 1  # Thread number starts from 1
-#     thread_name = f"Thread-{thread_num}"
-#     thread = threading.Thread(
-#         target=process_usernames,
-#         args=(token, run_event, url_attempt),
-#         name=thread_name,
-#     )
-#     threads.append(thread)
-#     thread.start()
-
-# # Wait for keyboard interrupt
 # try:
+#     # Wait for keyboard interrupt
 #     while True:
 #         time.sleep(0.01)
 # except KeyboardInterrupt:
+#     logging.info("Keyboard interrupt received. Attempting to cancel tasks.")
+#     # Cancel the remaining tasks
+#     for future in futures:
+#         future.cancel()
+#     # Clean up and join the threads
 #     logging.info("Attempting to close threads")
 #     run_event.clear()  # Signal threads to stop
-#     for thread in threads:
-#         thread.join()  # Wait for threads to finish
 #     logging.info("Threads successfully closed")
+
+# Create and start the threads
+threads = []
+for i, token in enumerate(tokens):
+    time.sleep(0.1)  # Don't start all at the same time
+    thread_num = i + 1  # Thread number starts from 1
+    thread_name = f"Thread_{thread_num}"
+    thread = threading.Thread(
+        target=process_usernames,
+        args=(token, run_event, url_attempt),
+        name=thread_name,
+    )
+    threads.append(thread)
+    thread.start()
+
+# Wait for keyboard interrupt
+try:
+    while True:
+        time.sleep(0.01)
+except KeyboardInterrupt:
+    logging.info("Attempting to close threads")
+    run_event.clear()  # Signal threads to stop
+    for thread in threads:
+        thread.join()  # Wait for threads to finish
+    logging.info("Threads successfully closed")
