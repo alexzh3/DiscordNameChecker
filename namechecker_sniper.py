@@ -162,13 +162,13 @@ def process_usernames(token, run_event, url):
             while data is not None and "retry_after" in data:
                 logging.debug(f"{threading.current_thread().name} - {data}")
                 if data.get("retry_after") < 60:
-                    time_60 = data.get("retry_after") + random.randint(30, 60)
+                    time_60 = data.get("retry_after") + random.randint(300, 310)
                     logging.info(
                         f"{threading.current_thread().name} - Rate limited, waiting {time_60} seconds"
                     )
                     time.sleep(time_60)  # Wait for rate limit
                 else:
-                    time_more = data.get("retry_after") + random.randint(10, 30)
+                    time_more = data.get("retry_after") + random.randint(1, 30)
                     logging.info(
                         f"{threading.current_thread().name} - Rate limited, waiting {time_more} seconds"
                     )
@@ -223,6 +223,9 @@ def process_usernames(token, run_event, url):
 
 def snipe_name(username):
     token, password = remove_first_snipe_token()
+    if token is None:
+        logging.info(f"Sniper token list is empty")
+        return
     # Create a dictionary with the variable values
     discord_info = {"toSnipe": username, "myPassword": password, "myToken": token}
     # Write the dictionary to a JSON file
@@ -235,6 +238,15 @@ def snipe_name(username):
         logging.debug(f'Sniper.js output for {username} and {token}:\n' + result.stdout)
         logging.debug(f'Sniper.js error for {username} and {token}:\n' + result.stderr)
 
+        # Check if "Username sniped" is in the result.stdout
+        if "Username sniped" in result.stdout:
+            logging.info(f"Username '{username}' was sniped successfully!")
+        else:
+            logging.info(f"Sniping of username '{username}' was not successful.")
+            # Write the token back to file as it is not used
+            with open("snipe_tokens.txt", "a") as file:
+                file.write('\n')
+                file.write(f'{token}:{password}')
     except subprocess.CalledProcessError as e:
         logging.error('Error executing the script:', e)
 
@@ -248,23 +260,21 @@ def handle_taken(data, username):
 
 def handle_available(data, username):
     logging.debug(f"{threading.current_thread().name} - {data}")
+    logging.info(
+    f"{threading.current_thread().name} - {username} is available and is added to the text file - Progress: {usernames.qsize()} ({round(100 - (usernames.qsize() / total_usernames * 100), 2)}%) - Time: {time.strftime('%H:%M:%S', time.gmtime(time.time() - start_time))}"
+    )
+    with open(available, "a") as file:
+        file.write(str(username) + "\n")
+    if notifications == True:
+        message = f"Username found: {username}"
+        send_telegram_message(bot_token, chat_id, message)
+
     if snipe_enabled:
         logging.info(
             f"{threading.current_thread().name} - Sniping {username} - Progress: {usernames.qsize()} ({round(100 - (usernames.qsize() / total_usernames * 100), 2)}%) - Time: {time.strftime('%H:%M:%S', time.gmtime(time.time() - start_time))}"
         )
         with lock:
             snipe_name(username)
-    else:
-        logging.info(
-            f"{threading.current_thread().name} - {username} is available and is added to the text file - Progress: {usernames.qsize()} ({round(100 - (usernames.qsize() / total_usernames * 100), 2)}%) - Time: {time.strftime('%H:%M:%S', time.gmtime(time.time() - start_time))}"
-        )
-        with open(available, "a") as file:
-            file.write(str(username) + "\n")
-        if notifications == True:
-            message = f"Username found: {username}"
-            send_telegram_message(bot_token, chat_id, message)
-            message = username
-            send_telegram_message(bot_token, chat_id, message)
 
 
 def handle_verify(data, token):
