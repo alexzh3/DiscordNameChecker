@@ -1,6 +1,9 @@
 import requests, threading, time, os, queue, logging, datetime, random, sys, json, subprocess
 from itertools import cycle
 
+# Create lock for threads
+lock = threading.Lock()
+
 
 def read_env_file(file_path):
     with open(file_path, "r") as file:
@@ -59,10 +62,11 @@ def create_proxy_pool(proxy_enabled, proxy_token):
 
 # Setup usernames
 def read_usernames():
-    with open(tocheck, "r") as file:
-        for line in file:
-            username = line.strip()
-            usernames.put(username)
+    with lock:
+        with open(tocheck, "r") as file:
+            for line in file:
+                username = line.strip()
+                usernames.put(username)
 
 
 # Read tokens
@@ -81,12 +85,17 @@ def remove_first_snipe_token():
     if lines:
         first_line = lines[0].strip()  # Get the first line
         lines = lines[1:]  # Remove the first line from the list
-
         with open("snipe_tokens.txt", "w") as file:
-            file.writelines(lines)
+            file.write()
 
-        token, password = first_line.split(":")
-        return token, password
+        try:
+            token, password = first_line.split(":")
+            return token, password
+        
+        except ValueError:
+            # If the line doesn't have the correct format, log an error and return None, None
+            logging.error("Invalid token format in snipe_tokens.txt")
+            return None, None
     else:
         return None, None
 
@@ -107,6 +116,8 @@ def request_username(token, username, proxies, proxy, url):
         "sec-fetch-site": "same-origin",
         "user-agent": "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36",
         "x-debug-options": "bugReporterEnabled",
+        "X-Discord-Locale": "en-US",
+        "X-Discord-Timezone": "Europe/Amsterdam",
         "x-super-properties": "eyJvcyI6IldpbmRvd3MiLCJicm93c2VyIjoiQ2hyb21lIiwiZGV2aWNlIjoiIiwic3lzdGVtX2xvY2FsZSI6Im5sLU5MIiwiYnJvd3Nlcl91c2VyX2FnZW50IjoiTW96aWxsYS81LjAgKFdpbmRvd3MgTlQgMTAuMDsgV2luNjQ7IHg2NCkgQXBwbGVXZWJLaXQvNTM3LjM2IChLSFRNTCwgbGlrZSBHZWNrbykgQ2hyb21lLzExNC4wLjAuMCBTYWZhcmkvNTM3LjM2IiwiYnJvd3Nlcl92ZXJzaW9uIjoiMTE0LjAuMC4wIiwib3NfdmVyc2lvbiI6IjEwIiwicmVmZXJyZXIiOiIiLCJyZWZlcnJpbmdfZG9tYWluIjoiIiwicmVmZXJyZXJfY3VycmVudCI6IiIsInJlZmVycmluZ19kb21haW5fY3VycmVudCI6IiIsInJlbGVhc2VfY2hhbm5lbCI6InN0YWJsZSIsImNsaWVudF9idWlsZF9udW1iZXIiOjIwODMxOSwiY2xpZW50X2V2ZW50X3NvdXJjZSI6bnVsbH0",
     }
     payload = {"username": username}
@@ -162,13 +173,13 @@ def process_usernames(token, run_event, url):
             while data is not None and "retry_after" in data:
                 logging.debug(f"{threading.current_thread().name} - {data}")
                 if data.get("retry_after") < 60:
-                    time_60 = data.get("retry_after") + random.randint(300, 310)
+                    time_60 = data.get("retry_after") + random.randint(300, 330)
                     logging.info(
                         f"{threading.current_thread().name} - Rate limited, waiting {time_60} seconds"
                     )
                     time.sleep(time_60)  # Wait for rate limit
                 else:
-                    time_more = data.get("retry_after") + random.randint(1, 30)
+                    time_more = data.get("retry_after") + random.randint(1, 2)
                     logging.info(
                         f"{threading.current_thread().name} - Rate limited, waiting {time_more} seconds"
                     )
@@ -195,10 +206,8 @@ def process_usernames(token, run_event, url):
             ):
                 handle_available(data, username)
             elif data.get("code") == 40002 or data.get("taken") == None:
-                handle_verify(data, token)
-                usernames.put(
-                    username
-                )  # Append current username back to list that was not checked because of error
+                with lock:
+                    handle_verify(data, token)
                 sys.exit()  # Stop current thread
 
             elif data.get("code") == 40001:
@@ -219,7 +228,6 @@ def process_usernames(token, run_event, url):
             f"Exception occurred in {threading.current_thread().name}: {str(e)} for token: {token}"
         )
         os._exit(1)
-
 
 def snipe_name(username):
     token, password = remove_first_snipe_token()
@@ -280,8 +288,28 @@ def handle_available(data, username):
 def handle_verify(data, token):
     logging.debug(f" {threading.current_thread().name} - {data}")
     logging.info(f" {threading.current_thread().name} - {token} needs to be verified")
+    # Add token to unverified
+    with open("unverified_tokens.txt", "a") as file:
+        file.write('\n')
+        file.write(f'{token}')
+    # Use a temporary file to store the filtered content
+    with lock:
+        with open("tokens.txt", 'r') as file:
+            lines = file.readlines()
+        with open("tokens_tmp.txt", 'w') as temp_file:  # Use a temporary file for writing
+            for line in lines:
+                line = line.strip()
+                # Check if the line contains the token to remove
+                if token not in line:
+                    temp_file.write(line + '\n')
+        os.remove("tokens.txt")
+        os.rename("tokens_tmp.txt", "tokens.txt")
+    # Remove token from list
+    if token in tokens:
+        tokens.remove(token)
     message = f"{token} needs to be verified"
     send_telegram_message(bot_token, chat_id, message)
+    sys.exit()  # Stop current thread
 
 
 def handle_unknown(data):
@@ -339,9 +367,6 @@ num_threads = min(len(tokens), usernames.qsize())
 
 # Timer for start time
 start_time = time.time()
-
-# Create lock
-lock = threading.Lock()
 
 # Create and start the threads
 threads = []
