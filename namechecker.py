@@ -1,5 +1,8 @@
-import requests, threading, time, os, queue, logging, datetime, concurrent.futures, random, sys
+import requests, threading, time, os, queue, logging, datetime, random, sys, json, subprocess
 from itertools import cycle
+
+# Create lock for threads
+lock = threading.Lock()
 
 
 def read_env_file(file_path):
@@ -75,6 +78,28 @@ def read_tokens():
     return tokens
 
 
+def remove_first_snipe_token():
+    with open("snipe_tokens.txt", "r") as file:
+        lines = file.readlines()
+
+    if lines:
+        first_line = lines[0].strip()  # Get the first line
+        lines = lines[1:]  # Remove the first line from the list
+        with open("snipe_tokens.txt", "w") as file:
+            file.write()
+
+        try:
+            token, password = first_line.split(":")
+            return token, password
+
+        except ValueError:
+            # If the line doesn't have the correct format, log an error and return None, None
+            logging.error("Invalid token format in snipe_tokens.txt")
+            return None, None
+    else:
+        return None, None
+
+
 def request_username(token, username, proxies, proxy, url):
     headers = {
         "accept": "*/*",
@@ -92,9 +117,12 @@ def request_username(token, username, proxies, proxy, url):
         "sec-fetch-site": "same-origin",
         "user-agent": "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36",
         "x-debug-options": "bugReporterEnabled",
+        "X-Discord-Locale": "en-US",
+        "X-Discord-Timezone": "Europe/Amsterdam",
         "x-super-properties": "eyJvcyI6IldpbmRvd3MiLCJicm93c2VyIjoiQ2hyb21lIiwiZGV2aWNlIjoiIiwic3lzdGVtX2xvY2FsZSI6Im5sLU5MIiwiYnJvd3Nlcl91c2VyX2FnZW50IjoiTW96aWxsYS81LjAgKFdpbmRvd3MgTlQgMTAuMDsgV2luNjQ7IHg2NCkgQXBwbGVXZWJLaXQvNTM3LjM2IChLSFRNTCwgbGlrZSBHZWNrbykgQ2hyb21lLzExNC4wLjAuMCBTYWZhcmkvNTM3LjM2IiwiYnJvd3Nlcl92ZXJzaW9uIjoiMTE0LjAuMC4wIiwib3NfdmVyc2lvbiI6IjEwIiwicmVmZXJyZXIiOiIiLCJyZWZlcnJpbmdfZG9tYWluIjoiIiwicmVmZXJyZXJfY3VycmVudCI6IiIsInJlZmVycmluZ19kb21haW5fY3VycmVudCI6IiIsInJlbGVhc2VfY2hhbm5lbCI6InN0YWJsZSIsImNsaWVudF9idWlsZF9udW1iZXIiOjIwODMxOSwiY2xpZW50X2V2ZW50X3NvdXJjZSI6bnVsbH0",
     }
     payload = {"username": username}
+    response = None
     try:
         response = requests.post(
             url, headers=headers, json=payload, proxies=proxies, timeout=10
@@ -103,19 +131,31 @@ def request_username(token, username, proxies, proxy, url):
         return data
 
     except requests.exceptions.RequestException as e:
-        logging.error(
-            f"Request exception occurred in {threading.current_thread().name}: {str(e)}, proxy: {proxy}, token: {token}"
-        )
-        usernames.put(
-            username
-        )  # Append current username back to list that was not checked because of exception
-        data = None
         try:
-            if response.status_code == 403:
-                handle_verify(data, token)
-                sys.exit()  # Stop current thread
+            logging.error(
+                f"Request exception occurred in {threading.current_thread().name}: {str(e)}, proxy: {proxy}, token: {token}"
+                + (
+                    f", status: {response.status_code}"
+                    if hasattr(response, "status_code")
+                    else ""
+                )
+            )
+        except Exception as e:
+            logging.error(
+                f"Request exception occurred in {threading.current_thread().name}: {str(e)}, proxy: {proxy}, token: {token}"
+            )
+
+        if response is None:
+            data = "No response"
             return data
-        except:
+        elif response.status_code == 403:
+            data = "Unverified"
+            return data
+        elif response.status_code == 502:
+            data = "Bad gateaway"
+            return data
+        else:
+            data = "Unknown"
             return data
 
 
@@ -147,15 +187,13 @@ def process_usernames(token, run_event, url):
             while data is not None and "retry_after" in data:
                 logging.debug(f"{threading.current_thread().name} - {data}")
                 if data.get("retry_after") < 60:
-                    time_60 = data.get("retry_after") + random.randint(30, 60)
+                    time_60 = data.get("retry_after") + random.randint(300, 330)
                     logging.info(
                         f"{threading.current_thread().name} - Rate limited, waiting {time_60} seconds"
                     )
                     time.sleep(time_60)  # Wait for rate limit
                 else:
-                    time_more = time.sleep(
-                        data.get("retry_after") + random.randint(5, 20)
-                    )
+                    time_more = data.get("retry_after") + random.randint(1, 2)
                     logging.info(
                         f"{threading.current_thread().name} - Rate limited, waiting {time_more} seconds"
                     )
@@ -164,41 +202,44 @@ def process_usernames(token, run_event, url):
                     token, username, proxies, proxy, url
                 )
 
-            if data is None:
-                time.sleep(10)  # Sleep 10 seconds
+            if (
+                data is None
+                or data == "Bad gateaway"
+                or data == "No response"
+                or "500: Internal Server Error" in data
+            ):  # Bad gateaway, no response or server error, try again
+                time_bad = random.randrange(60, 300)
+                logging.debug(
+                    f" {threading.current_thread().name} - {data} - Trying again after {time_bad} seconds because of bad gate or no response"
+                )
+                time.sleep(time_bad)
                 usernames.put(username)
                 continue
 
-            if (
-                data.get("code") == 50035
-                or data.get("username") == username
-                or data.get("taken") == True
-            ):
-                handle_taken(data, username)
-            elif (
-                data.get("code") == 10020
-                or "captcha_key" in data
-                or data.get("taken") == False
-            ):
-                handle_available(data, username)
-            elif data.get("code") == 40002 or data.get("taken") == None:
-                handle_verify(data, token)
-                usernames.put(
-                    username
-                )  # Append current username back to list that was not checked because of error
-                sys.exit()  # Stop current thread
+            elif data == "Unverified":
+                with lock:
+                    handle_verify(data, token)
+                usernames.put(username)
+                break  # Stop current thread
 
-            elif data.get("code") == 40001:
-                logging.error(f"{threading.current_thread().name} - {data}")
-                logging.error(
-                    f"Token not verified with phone or mail yet, token: {token}, {threading.current_thread().name}"
-                )
-                usernames.put(
-                    username
-                )  # Append current username back to list that was not checked because of error
-                sys.exit()  # Stop current thread
-            else:
-                handle_unknown(data)
+            elif isinstance(data, dict):
+                if data.get("message") == "401: Unauthorized":
+                    with lock:
+                        handle_unauthorized(data, token)
+                    usernames.put(username)  # Put username back
+                    break  # Stop current thread
+                elif data.get("username") == username or data.get("taken") == True:
+                    handle_taken(data, username)
+                elif "captcha_key" in data or data.get("taken") == False:
+                    handle_available(data, username)
+                else:
+                    logging.error(f"{threading.current_thread().name} - {data}")
+                    logging.error(
+                        f"Unknown error, token: {token}, {threading.current_thread().name}"
+                    )
+                    message = f"Unknown error, token: {token} - Data: {data}"
+                    send_telegram_message(bot_token, chat_id, message)
+                    os._exit(1)
             time.sleep(10)  # Sleep 10 seconds
 
     except Exception as e:
@@ -206,6 +247,38 @@ def process_usernames(token, run_event, url):
             f"Exception occurred in {threading.current_thread().name}: {str(e)} for token: {token}"
         )
         os._exit(1)
+
+
+def snipe_name(username):
+    token, password = remove_first_snipe_token()
+    if token is None:
+        logging.info(f"Sniper token list is empty")
+        return
+    # Create a dictionary with the variable values
+    discord_info = {"toSnipe": username, "myPassword": password, "myToken": token}
+    # Write the dictionary to a JSON file
+    with open("sniper/discord_info.json", "w") as file:
+        json.dump(discord_info, file, indent=4)
+    try:
+        # Execute sniper.js
+        result = subprocess.run(
+            ["node", "./sniper/sniper.js"], capture_output=True, text=True
+        )
+        # Log the standard output and error
+        logging.debug(f"Sniper.js output for {username} and {token}:\n" + result.stdout)
+        logging.debug(f"Sniper.js error for {username} and {token}:\n" + result.stderr)
+
+        # Check if "Username sniped" is in the result.stdout
+        if "Username sniped" in result.stdout:
+            logging.info(f"Username '{username}' was sniped successfully!")
+        else:
+            logging.info(f"Sniping of username '{username}' was not successful.")
+            # Write the token back to file as it is not used
+            with open("snipe_tokens.txt", "a") as file:
+                file.write("\n")
+                file.write(f"{token}:{password}")
+    except subprocess.CalledProcessError as e:
+        logging.error("Error executing the script:", e)
 
 
 def handle_taken(data, username):
@@ -218,37 +291,95 @@ def handle_taken(data, username):
 def handle_available(data, username):
     logging.debug(f"{threading.current_thread().name} - {data}")
     logging.info(
-        f"{threading.current_thread().name} - {username} is available and is added to the text file - Progress: {usernames.qsize()} ({round(100 - (usernames.qsize() / total_usernames * 100), 2)}%) - Time: {time.strftime('%H:%M:%S', time.gmtime(time.time() - start_time))}"
+        f"{threading.current_thread().name} - {username} is available and is added to the text file - Progress: {total_usernames - usernames.qsize()}/{total_usernames} ({round(100 - (usernames.qsize() / total_usernames * 100), 2)}%) - Time: {time.strftime('%H:%M:%S', time.gmtime(time.time() - start_time))}"
     )
     with open(available, "a") as file:
         file.write(str(username) + "\n")
-    if notifications == True:
         message = f"Username found: {username}"
         send_telegram_message(bot_token, chat_id, message)
-        message = username
+
+    if snipe_enabled:
+        logging.info(
+            f"{threading.current_thread().name} - Sniping {username} - Progress: {total_usernames - usernames.qsize()}/{total_usernames} ({round(100 - (usernames.qsize() / total_usernames * 100), 2)}%) - Time: {time.strftime('%H:%M:%S', time.gmtime(time.time() - start_time))}"
+        )
+        with lock:
+            snipe_name(username)
+
+
+def handle_unauthorized(data, token):
+    logging.debug(f" {threading.current_thread().name} - {data}")
+    logging.info(
+        f" {threading.current_thread().name} - {token} is invalid and is unauthorized"
+    )
+    try:
+        # Add token to unauthorized
+        with open("invalid_tokens.txt", "a") as file:
+            file.write(f"\n{token}")
+        # Use a temporary list to store the filtered content
+        filtered_lines = []
+        # Read and filter the content from the original file
+        with open("tokens.txt", "r") as file:
+            for line in file:
+                if token not in line:
+                    filtered_lines.append(line.strip())
+        # Write the filtered content back to the original file
+        with open("tokens.txt", "w") as file:
+            file.truncate(0)
+            file.write("\n".join(filtered_lines))
+        message = f"{token} is invalid"
         send_telegram_message(bot_token, chat_id, message)
+    except FileNotFoundError:
+        logging.error(
+            f" {threading.current_thread().name} - 'tokens.txt' file not found. Retrying after 2 seconds..."
+        )
+        time.sleep(2)
+        handle_unauthorized(data, token)
 
 
 def handle_verify(data, token):
     logging.debug(f" {threading.current_thread().name} - {data}")
     logging.info(f" {threading.current_thread().name} - {token} needs to be verified")
-    message = f"{token} needs to be verified"
-    send_telegram_message(bot_token, chat_id, message)
+    try:
+        # Add token to unauthorized
+        with open("unverified_tokens.txt", "a") as file:
+            file.write(f"\n{token}")
+        # Use a temporary list to store the filtered content
+        filtered_lines = []
+        # Read and filter the content from the original file
+        with open("tokens.txt", "r") as file:
+            for line in file:
+                if token not in line:
+                    filtered_lines.append(line.strip())
+        # Write the filtered content back to the original file
+        with open("tokens.txt", "w") as file:
+            file.truncate(0)
+            file.write("\n".join(filtered_lines))
+        message = f"{token} needs to be verified"
+        send_telegram_message(bot_token, chat_id, message)
 
-
-def handle_unknown(data):
-    logging.error(f"{threading.current_thread().name} - {data}")
-    logging.error(f"Unknown error, token: {token}, {threading.current_thread().name}")
-    os._exit(1)
+    except FileNotFoundError:
+        logging.error(
+            f" {threading.current_thread().name} - 'tokens.txt' file not found. Retrying after 2 seconds..."
+        )
+        time.sleep(2)
+        handle_verify(data, token)
 
 
 # Replace with your own Telegram bot token and chat ID
 def send_telegram_message(token, chat_id, message):
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    params = {"chat_id": chat_id, "text": message}
-    response = requests.post(url, params=params)
-    if response.status_code != 200:
-        logging.error("Failed to send Telegram message.")
+    if notifications == True:
+        try:
+            url = f"https://api.telegram.org/bot{token}/sendMessage"
+            params = {"chat_id": chat_id, "text": message}
+            response = requests.post(url, params=params)
+            if response.status_code != 200:
+                time.sleep(random.randint(1, 10))
+                logging.error("Failed to send Telegram message.")
+                send_telegram_message(token, chat_id, message)
+        except:
+            time.sleep(random.randint(1, 10))
+            logging.error("Exception caught, failed to send Telegram message.")
+            send_telegram_message(token, chat_id, message)
 
 
 # Set config variables
@@ -262,6 +393,7 @@ chat_id = env_dict.get("chat_id")
 log_type = env_dict.get("log_type")
 proxy_enabled = env_dict.get("proxy_enabled") == "True"
 proxy_token = env_dict.get("proxy_token")
+snipe_enabled = env_dict.get("snipe_enabled") == "True"
 configure_logging(log_type)
 
 # URL
@@ -291,39 +423,10 @@ num_threads = min(len(tokens), usernames.qsize())
 # Timer for start time
 start_time = time.time()
 
-# Create lock
-lock = threading.Lock()
-
-# # Create a ThreadPoolExecutor with a maximum of 1000 threads
-# executor = concurrent.futures.ThreadPoolExecutor(
-#     max_workers=num_threads, thread_name_prefix="Thread"
-# )
-# # List to store the Future objects
-# futures = []
-# for token in tokens:
-#     # Submit tasks to the thread pool
-#     time.sleep(0.15)  # Don't start all at the same time
-#     future = executor.submit(process_usernames, token, run_event, url_attempt)
-#     futures.append(future)  # Append the Future object to the list
-
-# try:
-#     # Wait for keyboard interrupt
-#     while True:
-#         time.sleep(0.01)
-# except KeyboardInterrupt:
-#     logging.info("Keyboard interrupt received. Attempting to cancel tasks.")
-#     # Cancel the remaining tasks
-#     for future in futures:
-#         future.cancel()
-#     # Clean up and join the threads
-#     logging.info("Attempting to close threads")
-#     run_event.clear()  # Signal threads to stop
-#     logging.info("Threads successfully closed")
-
 # Create and start the threads
 threads = []
 for i, token in enumerate(tokens):
-    time.sleep(0.1)  # Don't start all at the same time
+    time.sleep(1)  # Don't start all at the same time
     thread_num = i + 1  # Thread number starts from 1
     thread_name = f"Thread_{thread_num}"
     thread = threading.Thread(
