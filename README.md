@@ -1,5 +1,5 @@
 # DiscordNameChecker
-A Python Discord script that is able to check the availability of an username on Discord from a wordlist text file.
+A Python Discord script that can check the availability of a username on Discord from a wordlist text file. Supports captcha, sniping names, multi-threading, and has proxy support. This tool is not maintained anymore and does not work properly anymore.
 
 # Instructions:
 1. Download Python3 https://www.python.org/downloads/
