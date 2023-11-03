@@ -9,4 +9,4 @@ A Python Discord script that is able to check the availability of an username on
 5. Change the `env.txt` variables to your liking, where `tocheck` is the name of the list of usernames to check and `available` a text file which will include the available names.
 6. Run `Python namechecker.py`
 
-**Remember to never share your Discord authentication token.**
+**Remember to never share your Discord authentication token. Usage of this tool is educational, I am not responsible for your usage of this tool and its effects on your account.**
